@@ -6,6 +6,6 @@
 
 ## 关于我
 
-github: [https://github.com/xiangguanghua](https://github.com/xiangguanghua)
-email: [ixiangguanghua@163.com](mailto:ixiangguanghua@163.com)
-wechat: GuanghuaXiang
+github: [https://github.com/xiangguanghua](https://github.com/xiangguanghua)  
+email: [ixiangguanghua@163.com](mailto:ixiangguanghua@163.com)  
+wechat: GuanghuaXiang  
