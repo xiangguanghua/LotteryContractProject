@@ -37,6 +37,11 @@ contract Raffle is VRFConsumerBaseV2Plus {
     error Raffle_SendMoreToEnterRaffle(); // 定义Eth不足错误
     error Raffle_TransferFailed(); // 定义转账失败错误
     error Raffle_RaffleNotOpen(); // 定义抽奖状态错误
+    error Raffle_UpkeepNotNeeded(
+        uint256 balance,
+        uint256 numPlayers,
+        uint256 raffleState
+    );
 
     // 定义抽奖状态
     enum RaffleState {
@@ -74,13 +79,13 @@ contract Raffle is VRFConsumerBaseV2Plus {
         uint256 entranceFee,
         uint256 interval,
         address vrfCoordinator,
-        bytes32 keyHash,
+        bytes32 gasLane,
         uint64 subscriptionId,
         uint32 callbackGasLimit
     ) VRFConsumerBaseV2Plus(vrfCoordinator) {
         i_entranceFee = entranceFee;
         i_interval = interval;
-        i_keyHash = keyHash;
+        i_keyHash = gasLane;
         i_subscriptionId = subscriptionId;
         i_callbackGasLimit = callbackGasLimit;
 
@@ -114,16 +119,39 @@ contract Raffle is VRFConsumerBaseV2Plus {
         emit RaffleEntered(msg.sender);
     }
 
+    /***
+     * 检查是否需要进行抽奖
+     * 1.检查是否过了抽奖时间
+     * 2.检查抽奖状态是否为OPEN
+     * 3.检查是否有用户购买彩票
+     * 4.检查奖金池中是否有金额
+     */
+    function checkUpkeep(
+        bytes memory /*checkData*/
+    ) public view returns (bool upkeepNeeded, bytes memory) {
+        upkeepNeeded =
+            (block.timestamp - s_lastTimestamp) > i_interval &&
+            s_raffleState == RaffleState.OPEN &&
+            s_players.length > 0 &&
+            address(this).balance > 0;
+        return (upkeepNeeded, "");
+    }
+
     /**
      * 随机选出获胜者
      * 1.随机生成一个数
      * 2.使用随机数选择一个获胜者
      * 3.将奖金池中的金额发送给获胜者
      */
-    function pickWinner() external {
+    function performUpkeep(bytes calldata /*performData*/) external {
         // 计算选取获胜者的时间间隔
-        if ((block.timestamp - s_lastTimestamp) < i_interval) {
-            revert();
+        (bool upkeepNeeded, ) = checkUpkeep("");
+        if (!upkeepNeeded) {
+            revert Raffle_UpkeepNotNeeded(
+                address(this).balance,
+                s_players.length,
+                uint256(s_raffleState)
+            );
         }
         // 设置抽奖状态为计算中
         s_raffleState = RaffleState.CALCULATING;
@@ -141,14 +169,14 @@ contract Raffle is VRFConsumerBaseV2Plus {
                     VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
                 )
             });
-        uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
+        s_vrfCoordinator.requestRandomWords(request);
     }
 
     /**
      * Chainlink VRF 回调函数
      */
     function fulfillRandomWords(
-        uint256 requestId,
+        uint256 /*requestId*/,
         uint256[] memory randomWords
     ) internal override {
         // 获取随机数
@@ -168,7 +196,6 @@ contract Raffle is VRFConsumerBaseV2Plus {
         if (!success) {
             revert Raffle_TransferFailed();
         }
-
         emit WinnerPicked(winner);
     }
 
