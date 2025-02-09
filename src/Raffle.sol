@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.19;
 
 import {VRFConsumerBaseV2Plus} from "@chainlink/contracts/src/v0.8/dev/vrf/VRFConsumerBaseV2Plus.sol";
 import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/dev/vrf/libraries/VRFV2PlusClient.sol";
+import {AutomationCompatibleInterface} from "@chainlink/contracts/src/v0.8/interfaces/AutomationCompatibleInterface.sol";
+
 /**
  * @title 实现一个彩票抽奖合约，用户可以购买彩票，抽奖，抽奖结果随机
  * @author XiangGuanghua
@@ -32,55 +34,55 @@ import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/dev/vrf/libraries/V
  * - internal & private view & pure functions
  * - external & public view & pure functions
  */
-contract Raffle is VRFConsumerBaseV2Plus {
-    /****Errors****/
+contract Raffle is VRFConsumerBaseV2Plus, AutomationCompatibleInterface {
+    /**
+     * Errors***
+     */
     error Raffle_SendMoreToEnterRaffle(); // 定义Eth不足错误
     error Raffle_TransferFailed(); // 定义转账失败错误
     error Raffle_RaffleNotOpen(); // 定义抽奖状态错误
     error Raffle_UpkeepNotNeeded(
+        // 定义循环错误
         uint256 balance,
         uint256 numPlayers,
         uint256 raffleState
     );
 
+    // Lottery Variables
+    uint256 private immutable i_entranceFee; // 彩票面值
+    uint256 private immutable i_interval; // 抽奖周期：每过多久选个一个获胜者
+    address payable[] private s_players; // 购买彩票的用户地址（可支付的）
+    uint256 private s_lastTimestamp; // 记录上次抽奖时间
+    address payable private s_winner; // 记录获胜者
+    RaffleState private s_raffleState; // 记录抽奖状态
     // 定义抽奖状态
+
     enum RaffleState {
         OPEN, //  0
         CALCULATING //   1
     }
 
-    // 彩票面值
-    uint256 private immutable i_entranceFee;
-    // 每过多久选个一个获胜者
-    uint256 private immutable i_interval;
-    // 购买彩票的用户地址（可支付的）
-    address payable[] private s_players;
-    // 记录上次抽奖时间
-    uint256 private s_lastTimestamp;
-    // 记录获胜者
-    address payable private s_winner;
-    // 记录抽奖状态
-    RaffleState private s_raffleState;
-
-    // VRF Coordinator
-    // VRF Coordinator
+    // Chainlink VRF Variables
     bytes32 private immutable i_keyHash;
-    uint64 private immutable i_subscriptionId;
+    uint256 private immutable i_subscriptionId;
     uint32 private immutable i_callbackGasLimit;
     uint16 private constant REQUEST_CONFIRMATIONS = 3;
     uint32 private constant NUM_WORDS = 1;
 
-    /****Events****/
+    /**
+     * Events***
+     */
     event RaffleEntered(address indexed player); // 定义购买彩票事件，记录购买彩票的用户地址，并且支持使用地址搜索
     event WinnerPicked(address indexed winner); // 定义获胜者事件，记录获胜者地址
+    event RequestedRaffeWinner(uint256 indexed requestId); // 定义请求抽奖事件
 
     // 彩票面值不可变，再构造函数中初始化设置
     constructor(
-        uint256 entranceFee,
-        uint256 interval,
+        uint256 entranceFee, //彩票面值
+        uint256 interval, // 抽奖周期
         address vrfCoordinator,
         bytes32 gasLane,
-        uint64 subscriptionId,
+        uint256 subscriptionId,
         uint32 callbackGasLimit
     ) VRFConsumerBaseV2Plus(vrfCoordinator) {
         i_entranceFee = entranceFee;
@@ -89,7 +91,7 @@ contract Raffle is VRFConsumerBaseV2Plus {
         i_subscriptionId = subscriptionId;
         i_callbackGasLimit = callbackGasLimit;
 
-        s_lastTimestamp = block.timestamp;
+        s_lastTimestamp = block.timestamp; // 上次抽奖时间
         s_raffleState = RaffleState.OPEN;
     }
 
@@ -111,15 +113,18 @@ contract Raffle is VRFConsumerBaseV2Plus {
             revert Raffle_SendMoreToEnterRaffle();
         }
         if (s_raffleState != RaffleState.OPEN) {
+            // 抽奖中，不允许购买彩票
             revert Raffle_RaffleNotOpen();
         }
         // 将购买彩票的用户地址存储再用户列表中
-        s_players.push(payable(msg.sender));
+        s_players.push(payable(msg.sender)); // 用户可以接受ETH，所以使用payable
         // 触发购买彩票事件，记录购买彩票的用户地址
         emit RaffleEntered(msg.sender);
     }
 
-    /***
+    /**
+     *
+     * Chainlink Automation
      * 检查是否需要进行抽奖
      * 1.检查是否过了抽奖时间
      * 2.检查抽奖状态是否为OPEN
@@ -129,15 +134,16 @@ contract Raffle is VRFConsumerBaseV2Plus {
     function checkUpkeep(
         bytes memory /*checkData*/
     ) public view returns (bool upkeepNeeded, bytes memory) {
-        upkeepNeeded =
-            (block.timestamp - s_lastTimestamp) > i_interval &&
-            s_raffleState == RaffleState.OPEN &&
-            s_players.length > 0 &&
-            address(this).balance > 0;
+        bool timeHasPassed = (block.timestamp - s_lastTimestamp) > i_interval;
+        bool isOpen = s_raffleState == RaffleState.OPEN;
+        bool hasBalance = address(this).balance > 0;
+        bool hasPlayers = s_players.length > 0;
+        upkeepNeeded = timeHasPassed && isOpen && hasBalance && hasPlayers;
         return (upkeepNeeded, "");
     }
 
     /**
+     * Chainlink Automation
      * 随机选出获胜者
      * 1.随机生成一个数
      * 2.使用随机数选择一个获胜者
@@ -160,7 +166,7 @@ contract Raffle is VRFConsumerBaseV2Plus {
         VRFV2PlusClient.RandomWordsRequest memory request = VRFV2PlusClient
             .RandomWordsRequest({
                 keyHash: i_keyHash,
-                subId: i_subscriptionId,
+                subId: i_subscriptionId, //订阅ID
                 requestConfirmations: REQUEST_CONFIRMATIONS,
                 callbackGasLimit: i_callbackGasLimit,
                 numWords: NUM_WORDS,
@@ -169,15 +175,16 @@ contract Raffle is VRFConsumerBaseV2Plus {
                     VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
                 )
             });
-        s_vrfCoordinator.requestRandomWords(request);
+        uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
+        emit RequestedRaffeWinner(requestId);
     }
 
     /**
      * Chainlink VRF 回调函数
      */
     function fulfillRandomWords(
-        uint256 /*requestId*/,
-        uint256[] memory randomWords
+        uint256,
+        /*requestId*/ uint256[] memory randomWords
     ) internal override {
         // 获取随机数
         uint256 indexOfWinner = randomWords[0] % s_players.length;
@@ -199,17 +206,39 @@ contract Raffle is VRFConsumerBaseV2Plus {
         emit WinnerPicked(winner);
     }
 
-    /*****************一些Getter方法********************** */
+    /**
+     * 一些Getter方法**********************
+     */
     /**
      * 获取彩票面值
      */
     function getEntranceFee() public view returns (uint256) {
         return i_entranceFee;
     }
+
+    function getRaffleState() public view returns (RaffleState) {
+        return s_raffleState;
+    }
+
+    function getPlayer(uint256 index) public view returns (address) {
+        return s_players[index];
+    }
+
+    function getLastTimeStamp() public view returns (uint256) {
+        return s_lastTimestamp;
+    }
+
+    function getRecentWinner() public view returns (address) {
+        return s_winner;
+    }
 }
 
-/*********************编码顺序规范****************/
-/*****************Layout of Contract*************/
+/**
+ * 编码顺序规范***************
+ */
+/**
+ * Layout of Contract************
+ */
 // version
 // imports
 // errors
@@ -220,7 +249,9 @@ contract Raffle is VRFConsumerBaseV2Plus {
 // Modifiers
 // Functions
 
-/*****************Layout of Functions*************/
+/**
+ * Layout of Functions************
+ */
 // constructor
 // receive function (if exists)
 // fallback function (if exists)
